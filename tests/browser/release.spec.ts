@@ -1,7 +1,8 @@
 import {test,expect} from '@playwright/test';
 test('built release trains, captures decisions, saves/reopens archive and resumes',async({page})=>{
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto('/');
+ await page.goto('./');
+ await expect(page.locator('i[data-lucide]')).toHaveCount(0);
  await page.getByRole('button',{name:'Pong Track and intercept a moving ball'}).click();
  await page.getByRole('button',{name:'Run one generation',exact:true}).click();
  await expect(page.locator('#archive-position')).toContainText('Viewing generation 1 of 1');
@@ -35,5 +36,5 @@ test('built release trains, captures decisions, saves/reopens archive and resume
  await page.screenshot({path:'test-results/release-save-reopen.png',fullPage:true});
 });
 test('release exposes verifiable build provenance and small JS payload',async({request})=>{
- const response=await request.get('/build-info.json');expect(response.ok()).toBeTruthy();const info=await response.json();expect(info.version).toBe('0.5.4');expect(info.sourceCommit).toMatch(/^[a-f0-9]{40}$/);expect(info.packageLockSha256).toMatch(/^[a-f0-9]{64}$/);const js=Object.entries(info.artifacts).filter(([p])=>p.endsWith('.js'));expect(js.length).toBeGreaterThan(0);expect(js.reduce((n,[,v]:any)=>n+v.size,0)).toBeLessThan(200000);
+ const response=await request.get('./build-info.json');expect(response.ok()).toBeTruthy();const info=await response.json();expect(info.version).toBe('0.5.5');expect(info.sourceCommit).toMatch(/^[a-f0-9]{40}$/);expect(info.packageLockSha256).toMatch(/^[a-f0-9]{64}$/);const js=Object.entries(info.artifacts).filter(([p])=>p.endsWith('.js'));expect(js.length).toBeGreaterThan(0);expect(js.reduce((n,[,v]:any)=>n+v.size,0)).toBeLessThan(200000);
 });
