@@ -1,11 +1,13 @@
+import { pongReplayState } from './replay';
 import './style.css';
-import { createIcons, icons } from 'lucide';
-import { EvolutionEngine, type NetworkFamily, type MazeEnvironment, type DecisionTrace } from './neural';
+import { createIcons, Activity, AppWindow, ArrowRight, BadgeCheck, Binary, Bird, Blocks, Bomb, BrainCircuit, BrickWall, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, CircleDot, Crosshair, Crown, Dna, Download, DownloadCloud, Eraser, FastForward, Flag, Flame, FlaskConical, FolderOpen, Gamepad2, Gauge, Gem, Grid3X3, Hash, Info, LayoutGrid, Library, Lightbulb, LoaderCircle, Lock, Maximize2, Minus, Monitor, MonitorDown, Move, Network, Orbit, PackageCheck, Palette, Pause, PencilRuler, Play, Plus, Radio, RefreshCw, Rocket, RotateCcw, Route, Save, Scan, ScanEye, ScanLine, Settings2, ShieldAlert, ShieldCheck, Shuffle, Sparkles, StepBack, StepForward, SunMedium, Swords, TextSearch, Timer, Trash2, TreePine, TriangleAlert, Trophy, Users, Zap } from 'lucide';
+const icons = {Activity, AppWindow, ArrowRight, BadgeCheck, Binary, Bird, Blocks, Bomb, BrainCircuit, BrickWall, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, CircleDot, Crosshair, Crown, Dna, Download, DownloadCloud, Eraser, FastForward, Flag, Flame, FlaskConical, FolderOpen, Gamepad2, Gauge, Gem, Grid3X3, Hash, Info, LayoutGrid, Library, Lightbulb, LoaderCircle, Lock, Maximize2, Minus, Monitor, MonitorDown, Move, Network, Orbit, PackageCheck, Palette, Pause, PencilRuler, Play, Plus, Radio, RefreshCw, Rocket, RotateCcw, Route, Save, Scan, ScanEye, ScanLine, Settings2, ShieldAlert, ShieldCheck, Shuffle, Sparkles, StepBack, StepForward, SunMedium, Swords, TextSearch, Timer, Trash2, TreePine, TriangleAlert, Trophy, Users, Zap};
+import { EvolutionEngine, type NetworkFamily, type MazeEnvironment, type DecisionTrace, type EvaluatedStep, traceFromStep } from './neural';
+
+import { createProject, parseProject, type GenerationRecord } from './project';
 
 type GameId = 'snake' | 'tictactoe' | 'minesweeper' | 'flappy' | 'pong' | 'xor' | 'breakout' | 'dino' | 'merge2048' | 'lander' | 'maze' | 'custom';
 type NetworkType = NetworkFamily;
-
-interface GenerationRecord { generation:number; best:number; average:number; species:number; trace:DecisionTrace; decisions:number; decisionLimit:number; timeLimitSeconds:number; actionRuns:Array<{action:string;count:number}>; maze?:MazeEnvironment; }
 
 interface AppState {
   game: GameId;
@@ -89,6 +91,8 @@ const state: AppState = {
   forgePoints:0,xp:0,level:1,streak:0,boosts:3,generationSpeed:1,acceleration:25,episodeTimeLimit:10,decisionsPerSecond:10,mazeMode:'coevolve',maze:starterMaze(),architectFitness:0,architectGeneration:1,
 };
 
+const defaultState = structuredClone(state);
+
 try{const progress=JSON.parse(localStorage.getItem('neural-forge-progress')||'null');if(progress)Object.assign(state,progress);}catch{/* keep fresh progression */}
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -112,7 +116,7 @@ app.innerHTML = `
       <section class="arena-panel panel">
         <div class="panel-header arena-header"><div><div class="eyebrow">STORED GENERATION CHAMPION</div><h1 id="arena-title">Snake</h1><p class="panel-subtitle" id="arena-explainer">Run a generation to store its exact champion and decision.</p></div><div class="arena-badges"><button class="maze-button hidden" id="maze-tools" data-action="maze-builder"><i data-lucide="pencil-ruler"></i> Maze studio</button><span class="badge"><i data-lucide="trophy"></i> <span id="champion-label">No generation recorded</span></span><button class="ghost-button" data-action="archive-latest"><i data-lucide="radio"></i> Follow latest</button></div></div>
         <div class="generation-browser"><button data-action="archive-prev" aria-label="Previous generation"><i data-lucide="chevron-left"></i></button><div class="generation-location"><span id="archive-position">No generations stored yet</span><input id="archive-slider" type="range" min="0" max="0" value="0" disabled aria-label="Stored generation"></div><button data-action="archive-next" aria-label="Next generation"><i data-lucide="chevron-right"></i></button><label>JUMP TO <input id="jump-generation" type="number" min="1" placeholder="Gen #"></label><button class="archive-text-button" data-action="archive-best"><i data-lucide="crown"></i> Best ever</button><button class="archive-text-button" data-action="archive-latest"><i data-lucide="radio"></i> Latest</button></div>
-        <div class="game-stage" id="game-stage"><canvas id="game-canvas"></canvas><div class="game-hud"><span>EXACT STORED OBSERVATION</span><span id="episode-hud">TIMED MULTI-MOVE EPISODE</span></div></div>
+        <div class="game-stage" id="game-stage"><canvas id="game-canvas"></canvas><div class="game-hud"><span>CAPTURED EVALUATION / PONG REPLAY</span><span id="episode-hud">TIMED MULTI-MOVE EPISODE</span></div></div>
         <div class="replay-controls"><button data-action="replay-prev" aria-label="Previous move"><i data-lucide="step-back"></i></button><button class="replay-play" data-action="replay-toggle" aria-label="Play champion episode"><i data-lucide="play"></i><span>PLAY EPISODE</span></button><button data-action="replay-next" aria-label="Next move"><i data-lucide="step-forward"></i></button><label><span id="replay-position">NO EPISODE</span><input id="replay-slider" type="range" min="0" max="0" value="0" disabled></label><strong id="replay-action">Run a generation first</strong></div>
         <div class="episode-sequence"><span>CHAMPION MOVE SEQUENCE</span><div id="episode-moves"><em>Run a generation to record every move in order.</em></div></div>
         <div class="decision-flow"><div class="decision-step"><b>1</b><div><span>WHAT THE NETWORK SEES</span><div class="signal-list" id="observation-list"></div></div></div><i data-lucide="arrow-right"></i><div class="decision-step chosen"><b>2</b><div><span>WHAT IT CHOSE</span><strong id="chosen-action">RIGHT</strong><small id="choice-reason">Strongest output activation</small></div></div><i data-lucide="arrow-right"></i><div class="decision-step"><b>3</b><div><span>HOW IT EARNS FITNESS</span><p id="fitness-rule"></p></div></div></div>
@@ -180,6 +184,7 @@ let generationArchive:GenerationRecord[]=[];
 let viewedArchiveIndex=-1;
 let followLatest=true;
 let lastEpisode={decisions:0,decisionLimit:100,actions:[] as string[]};
+let lastSteps:EvaluatedStep[]=[];
 let replayStep=0,replayPlaying=false,replayLastAt=0;
 let updateCheck:UpdateCheckResult|null=null;
 
@@ -196,9 +201,12 @@ function viewedGeneration(){return viewedArchiveIndex>=0?generationArchive[viewe
 function showArchiveGeneration(index:number){if(!generationArchive.length)return;viewedArchiveIndex=Math.max(0,Math.min(generationArchive.length-1,index));followLatest=viewedArchiveIndex===generationArchive.length-1;latestTrace=generationArchive[viewedArchiveIndex].trace;replayStep=0;replayPlaying=false;updateUI();}
 function replayActions(record=viewedGeneration()){if(!record)return[];return record.actionRuns.flatMap(run=>Array(run.count).fill(run.action) as string[]);}
 function setReplayStep(step:number){const actions=replayActions();replayStep=Math.max(0,Math.min(actions.length,step));if(replayStep>=actions.length)replayPlaying=false;updateReplayControls();drawGame(performance.now());}
-function updateReplayControls(){const actions=replayActions(),has=actions.length>0,slider=$('#replay-slider') as HTMLInputElement;slider.disabled=!has;slider.max=String(actions.length);slider.value=String(replayStep);$('#replay-position').textContent=has?`MOVE ${replayStep} / ${actions.length}`:'NO EPISODE';$('#replay-action').textContent=!has?'Run a generation first':replayStep===0?'Ready at episode start':`LAST ACTION: ${actions[replayStep-1]}${replayStep>=actions.length?' · EPISODE FINISHED':''}`;const play=$('[data-action="replay-toggle"]') as HTMLButtonElement;play.disabled=!has;play.innerHTML=replayPlaying?'<i data-lucide="pause"></i><span>PAUSE REPLAY</span>':'<i data-lucide="play"></i><span>PLAY EPISODE</span>';createIcons({icons});}
+function updateReplayControls(){
+  const record=viewedGeneration();
+  if(record?.steps?.length){const index=Math.max(0,Math.min(record.steps.length-1,replayStep-1));latestTrace=traceFromStep(record.trace,record.steps[index],index);renderDecisionTrace();}
+  const actions=replayActions(),has=actions.length>0,slider=$('#replay-slider') as HTMLInputElement;slider.disabled=!has;slider.max=String(actions.length);slider.value=String(replayStep);$('#replay-position').textContent=has?`MOVE ${replayStep} / ${actions.length}`:'NO EPISODE';$('#replay-action').textContent=!has?'Run a generation first':replayStep===0?'Ready at episode start':`LAST ACTION: ${actions[replayStep-1]}${replayStep>=actions.length?' · EPISODE FINISHED':''}`;const play=$('[data-action="replay-toggle"]') as HTMLButtonElement;play.disabled=!has;play.innerHTML=replayPlaying?'<i data-lucide="pause"></i><span>PAUSE REPLAY</span>':'<i data-lucide="play"></i><span>PLAY EPISODE</span>';createIcons({icons});}
 function compressActions(actions:string[]){const runs:Array<{action:string;count:number}>=[];for(const action of actions){const last=runs.at(-1);if(last?.action===action)last.count++;else runs.push({action,count:1});}return runs;}
-function storeGeneration(){const record:GenerationRecord={generation:state.generation,best:state.bestFitness,average:state.averageFitness,species:state.species,trace:liveTrace,decisions:lastEpisode.decisions,decisionLimit:lastEpisode.decisionLimit,timeLimitSeconds:state.episodeTimeLimit,actionRuns:compressActions(lastEpisode.actions),maze:state.game==='maze'?{...state.maze,walls:[...state.maze.walls]}:undefined};generationArchive.push(record);if(followLatest){viewedArchiveIndex=generationArchive.length-1;latestTrace=record.trace;}}
+function storeGeneration(){const record:GenerationRecord={generation:state.generation,best:state.bestFitness,average:state.averageFitness,species:state.species,trace:liveTrace,steps:lastSteps,decisions:lastEpisode.decisions,decisionLimit:lastEpisode.decisionLimit,timeLimitSeconds:state.episodeTimeLimit,actionRuns:compressActions(lastEpisode.actions),maze:state.game==='maze'?{...state.maze,walls:[...state.maze.walls]}:undefined};generationArchive.push(record);if(followLatest){viewedArchiveIndex=generationArchive.length-1;latestTrace=record.trace;}}
 
 function renderGameList() {
   $('#game-list').innerHTML = games.map(game => `
@@ -237,7 +245,7 @@ function drawGame(t: number) {
 }
 
 function observationValue(label:string){return latestTrace.observations.find(item=>item.label===label)?.value||0;}
-function pongReplayState(actions:string[],steps:number){let paddle=.5,opponent=.5,ballX=.5,ballY=.15,vx=-.035,vy=.037,rallies=0,finished=false;for(let step=0;step<Math.min(steps,actions.length);step++){ballX+=vx;ballY+=vy;if(ballY<.04||ballY>.96){vy*=-1;ballY=Math.max(.04,Math.min(.96,ballY));}opponent=Math.max(.12,Math.min(.88,opponent+Math.sign(ballY-opponent)*.045));const action=actions[step];paddle=Math.max(.12,Math.min(.88,paddle+(action==='UP'?-.06:action==='DOWN'?.06:0)));if(ballX<.06){if(Math.abs(ballY-paddle)<.17){vx=Math.abs(vx)*1.015;ballX=.06;rallies++;}else{finished=true;break;}}else if(ballX>.94){vx=-Math.abs(vx)*1.015;ballX=.94;rallies++;}}return{paddle,opponent,ballX,ballY,rallies,finished};}
+
 function drawDecisionArrow(ctx:CanvasRenderingContext2D,x:number,y:number,action:string,accent:string){const moves:Record<string,[number,number]>={RIGHT:[1,0],LEFT:[-1,0],UP:[0,-1],DOWN:[0,1],'MOVE RIGHT':[1,0],'MOVE LEFT':[-1,0],'MOVE UP':[0,-1],'MOVE DOWN':[0,1],FLAP:[0,-1],JUMP:[0,-1]};const move=moves[action];if(!move)return;ctx.strokeStyle=accent;ctx.fillStyle=accent;ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+move[0]*55,y+move[1]*55);ctx.stroke();ctx.beginPath();ctx.arc(x+move[0]*55,y+move[1]*55,6,0,Math.PI*2);ctx.fill();}
 function drawStoredDecision(ctx:CanvasRenderingContext2D,w:number,h:number,accent:string){
   if(!generationArchive.length){ctx.fillStyle='rgba(255,255,255,.7)';ctx.font='600 18px Inter';ctx.textAlign='center';ctx.fillText('No generation recorded yet',w/2,h/2-8);ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='11px Inter';ctx.fillText('Press Start or run one generation to create the first real champion record.',w/2,h/2+16);return;}
@@ -351,7 +359,7 @@ function renderArchiveControls(){
 
 function updateUI() {
   const game=games.find(g=>g.id===state.game);$('#arena-title').textContent=state.game==='custom'?(state.custom?.sourceName||'Custom task'):(game?.name||'Custom');
-  const record=viewedGeneration(),trained=Boolean(record);$('#champion-label').textContent=record?`Generation ${record.generation} champion`:'No generation recorded';$('#network-status').textContent=record?`GEN ${record.generation} CHAMPION`:'NO STORED CHAMPION';$('#arena-explainer').textContent=record?`Generation ${record.generation}'s champion made ${record.decisions} move${record.decisions===1?'':'s'} out of a ${record.decisionLimit}-move (${record.timeLimitSeconds}s) limit before its episode ended. This panel shows one exact decision from that real trial. Training is at generation ${state.generation}.`:'Run a generation to evaluate full multi-move episodes and store the champion’s real move count, decision, weights, and fitness.';
+  const record=viewedGeneration(),trained=Boolean(record);$('#champion-label').textContent=record?`Generation ${record.generation} champion`:'No generation recorded';$('#network-status').textContent=record?`GEN ${record.generation} CHAMPION`:'NO STORED CHAMPION';$('#arena-explainer').textContent=record?`Generation ${record.generation}'s champion made ${record.decisions} move${record.decisions===1?'':'s'} out of a ${record.decisionLimit}-move (${record.timeLimitSeconds}s) limit before its episode ended. The inspection follows captured evaluation decisions; Pong replays stored actions through the same deterministic physics. Other arenas show the selected captured observation. Training is at generation ${state.generation}.`:'Run a generation to evaluate full multi-move episodes and store the champion’s real move count, decision, weights, and fitness.';
   $('#episode-hud').textContent=record?`${record.decisions} / ${record.decisionLimit} MOVES USED`:`${state.episodeTimeLimit}s × ${state.decisionsPerSecond}/s = ${state.episodeTimeLimit*state.decisionsPerSecond} MOVES MAX`;
   $('#episode-moves').innerHTML=record?record.actionRuns.map((run,index)=>`<span><b>${index+1}</b>${run.action}${run.count>1?` <i>×${run.count}</i>`:''}</span>`).join(''):'<em>Run a generation to record every move in order.</em>';
   $('#episode-budget').textContent=`${state.episodeTimeLimit*state.decisionsPerSecond} MOVES MAX`;
@@ -405,7 +413,7 @@ function evolveOne() {
   state.averageFitness = result.average;
   state.species = result.species;
   lastEpisode={decisions:result.championDecisions,decisionLimit:result.decisionLimit,actions:result.championActions};
-  refreshDecisionTrace();
+  liveTrace=result.championTrace;lastSteps=result.championSteps;if(followLatest)latestTrace=liveTrace;
   replayStep=0;replayPlaying=false;
   storeGeneration();
   if(state.game==='maze'&&state.mazeMode==='coevolve'){
@@ -432,7 +440,7 @@ function updateBadge(){document.querySelector<HTMLElement>('#update-dot')?.class
 async function checkUpdates(showModal=false){if(!window.neuralForge){if(showModal)openUpdateModal('browser');return;}if(showModal)openUpdateModal('checking');try{updateCheck=await window.neuralForge.checkForUpdates();updateBadge();if(showModal)openUpdateModal(updateCheck.updateAvailable?'available':'current');else if(updateCheck.updateAvailable)toast(`Neural Forge ${updateCheck.update?.version} is ready`,'Open Updates to review and install it.','download-cloud');}catch(error){if(showModal)openUpdateModal('error',error instanceof Error?error.message:String(error));}}
 function openUpdateModal(mode:'checking'|'available'|'current'|'browser'|'error',errorMessage=''){
   const root=$('#modal-root');root.className='modal-root open';const current=updateCheck?.currentVersion||'checking…',next=updateCheck?.update;
-  const content=mode==='checking'?`<div class="update-state"><i data-lucide="loader-circle" class="spin"></i><h3>Checking the release server…</h3><p>Comparing this installed version with the Neural Forge update manifest.</p></div>`:mode==='available'&&next?`<div class="update-state update-ready"><i data-lucide="package-check"></i><span class="update-kicker">UPDATE AVAILABLE</span><h3>${current} → ${next.version}</h3><p>${next.notes}</p><div class="update-facts"><span><b>${formatBytes(next.size)}</b> download</span><span><b>SHA-256</b> verified before install</span></div><div class="update-progress hidden" id="update-progress"><div><span id="update-progress-copy">Starting download…</span><b id="update-percent">0%</b></div><i><em id="update-progress-bar"></em></i></div><button class="primary-button update-install" data-install-update><i data-lucide="download"></i> Download and install</button><small>Neural Forge closes only after the installer passes its safety check. Your saved progress stays in place.</small></div>`:mode==='current'?`<div class="update-state"><i data-lucide="badge-check"></i><span class="update-kicker">UP TO DATE</span><h3>Neural Forge ${current}</h3><p>You already have the newest published version.</p><button class="secondary-button" data-recheck-update><i data-lucide="refresh-cw"></i> Check again</button></div>`:mode==='browser'?`<div class="update-state"><i data-lucide="monitor-down"></i><span class="update-kicker">WEB PLAYGROUND</span><h3>Updates apply in the Windows app</h3><p>This browser page is always the current web build. Open the installed Neural Forge app and choose Updates to update the desktop copy.</p></div>`:`<div class="update-state update-error"><i data-lucide="triangle-alert"></i><span class="update-kicker">CHECK FAILED</span><h3>Could not check for updates</h3><p>${errorMessage||'The release server could not be reached.'}</p><button class="secondary-button" data-recheck-update><i data-lucide="refresh-cw"></i> Try again</button></div>`;
+  const content=mode==='checking'?`<div class="update-state"><i data-lucide="loader-circle" class="spin"></i><h3>Checking the release server…</h3><p>Comparing this installed version with the Neural Forge update manifest.</p></div>`:mode==='available'&&next?`<div class="update-state update-ready"><i data-lucide="package-check"></i><span class="update-kicker">UPDATE AVAILABLE</span><h3>${current} → ${next.version}</h3><p>${next.notes}</p><div class="update-facts"><span><b>${formatBytes(next.size)}</b> download</span><span><b>SHA-256</b> verified before install</span></div><div class="update-progress hidden" id="update-progress"><div><span id="update-progress-copy">Starting download…</span><b id="update-percent">0%</b></div><i><em id="update-progress-bar"></em></i></div><button class="primary-button update-install" data-install-update><i data-lucide="download"></i> Download and install</button><small>Neural Forge closes only after the installer passes its safety check. Your saved progress stays in place.</small></div>`:mode==='current'?`<div class="update-state"><i data-lucide="badge-check"></i><span class="update-kicker">${window.neuralForge?.platform==='win32'?'UP TO DATE':'MANUAL UPDATES'}</span><h3>Neural Forge ${current}</h3><p>${window.neuralForge?.platform==='win32'?'You already have the newest published version.':'Linux releases are downloaded manually. The automatic installer channel is Windows only.'}</p><button class="secondary-button" data-recheck-update><i data-lucide="refresh-cw"></i> Check again</button></div>`:mode==='browser'?`<div class="update-state"><i data-lucide="monitor-down"></i><span class="update-kicker">WEB PLAYGROUND</span><h3>Updates apply in the Windows app</h3><p>This browser page is always the current web build. Open the installed Neural Forge app and choose Updates to update the desktop copy.</p></div>`:`<div class="update-state update-error"><i data-lucide="triangle-alert"></i><span class="update-kicker">CHECK FAILED</span><h3>Could not check for updates</h3><p>${errorMessage||'The release server could not be reached.'}</p><button class="secondary-button" data-recheck-update><i data-lucide="refresh-cw"></i> Try again</button></div>`;
   root.innerHTML=`<div class="modal-backdrop" data-update-close></div><section class="update-modal" role="dialog" aria-modal="true" aria-labelledby="update-title"><div class="modal-heading"><div><span class="eyebrow">NEURAL FORGE DESKTOP</span><h2 id="update-title">Software update</h2></div><button data-update-close aria-label="Close"><i data-lucide="x"></i></button></div>${content}</section>`;createIcons({icons});root.querySelectorAll('[data-update-close]').forEach(button=>button.addEventListener('click',()=>root.className='modal-root'));root.querySelector('[data-recheck-update]')?.addEventListener('click',()=>checkUpdates(true));root.querySelector('[data-install-update]')?.addEventListener('click',async event=>{const button=event.currentTarget as HTMLButtonElement;button.disabled=true;button.innerHTML='<i data-lucide="loader-circle" class="spin"></i> Downloading…';root.querySelector('#update-progress')?.classList.remove('hidden');createIcons({icons});const unsubscribe=window.neuralForge?.onUpdateProgress(progress=>{const bar=root.querySelector<HTMLElement>('#update-progress-bar'),percent=root.querySelector('#update-percent'),copy=root.querySelector('#update-progress-copy');if(bar)bar.style.width=`${progress.percent}%`;if(percent)percent.textContent=`${progress.percent}%`;if(copy)copy.textContent=`Downloaded ${formatBytes(progress.received)} of ${formatBytes(progress.total)}`;});try{await window.neuralForge?.installUpdate();if(root.querySelector('#update-progress-copy'))root.querySelector('#update-progress-copy')!.textContent='Verified. Restarting into the installer…';}catch(error){unsubscribe?.();openUpdateModal('error',error instanceof Error?error.message:String(error));}});
 }
 
@@ -451,8 +459,46 @@ bindRange('episode-time',v=>{state.episodeTimeLimit=v;updateUI();},'#episode-tim
 window.addEventListener('keydown',e=>{if(e.code==='Space'&&!$('.modal-root').classList.contains('open')){e.preventDefault();if(!state.running&&state.generation>=state.targetGenerations){completionShownFor=-1;openTrainingComplete();}else{state.running=!state.running;if(state.running)runStartedAt=performance.now();updateUI();}}});
 window.addEventListener('resize',()=>{drawChart();drawNetwork();});
 
-async function saveProject(){if(!window.neuralForge){localStorage.setItem('neural-forge-project',JSON.stringify(state));toast('Project saved','Stored in this browser for the preview.','save');return;}const result=await window.neuralForge.saveProject(state);if(!result.canceled)toast('Project saved',result.path||'Experiment saved.','save');}
-async function loadProject(){if(!window.neuralForge){const raw=localStorage.getItem('neural-forge-project');if(raw)Object.assign(state,JSON.parse(raw));else return toast('No saved project','Save an experiment first.','folder-open');}else{const result=await window.neuralForge.loadProject();if(result.canceled||!result.data)return;Object.assign(state,result.data);}if((state.networkType as string)==='NEAT')state.networkType='NEAT-style';if((state.networkType as string)==='Feed Forward')state.networkType='Dense MLP';if((state.networkType as string)==='Recurrent')state.networkType='Simple RNN';resetEngine();clearGenerationArchive();renderGameList();renderLayers();updateUI();toast('Project loaded','Experiment settings restored. Start training to create a new session generation archive.','folder-open');}
+async function saveProject(){
+  try {
+    const payload=createProject({...state},engine,architectEngine,generationArchive,{index:viewedArchiveIndex,followLatest,replayStep});
+    const serialized=JSON.stringify(payload);
+    parseProject(serialized,{...defaultState});
+    if(!window.neuralForge){
+      const previous=localStorage.getItem('neural-forge-project');
+      if(previous)localStorage.setItem('neural-forge-project-backup',previous);
+      localStorage.setItem('neural-forge-project',serialized);
+      toast('Project saved','Champion, population, archive, replay and settings retained.','save');return;
+    }
+    const result=await window.neuralForge.saveProject(payload);
+    if(!result.canceled)toast('Project saved','Champion, archive and settings saved with a backup of any replaced file.','save');
+  } catch(error){toast('Project not saved',`${error instanceof Error?error.message:'Storage failed'}. Existing saves are unchanged; use a smaller archive or free browser storage.`,'triangle-alert');}
+}
+async function loadProject(){
+  try {
+    let raw:unknown;
+    if(!window.neuralForge){raw=localStorage.getItem('neural-forge-project');if(!raw)return toast('No saved project','Save an experiment first.','folder-open');}
+    else {const result=await window.neuralForge.loadProject();if(result.canceled||!result.data)return;raw=result.data;}
+    const loaded=parseProject(raw,{...defaultState});
+    // Construct everything first: malformed input must not mutate the current run.
+    const nextEngine=loaded.document?EvolutionEngine.restore(loaded.document.engine):new EvolutionEngine([games.find(g=>g.id===loaded.state.game)?.inputs||8,...loaded.state.hiddenLayers as number[],games.find(g=>g.id===loaded.state.game)?.outputs||(loaded.state.custom as CustomTask)?.actions.length||4],loaded.state.population as number,loaded.state.networkType as NetworkType);
+    const nextArchitect=loaded.document?EvolutionEngine.restore(loaded.document.architect):new EvolutionEngine([4,10,8,1],Math.max(30,Math.floor((loaded.state.population as number)/2)),'Liquid');
+    delete state.custom;Object.assign(state,loaded.state);engine=nextEngine;architectEngine=nextArchitect;
+    generationArchive=loaded.document?.archive||[];
+    viewedArchiveIndex=loaded.document?.view.index??-1;followLatest=loaded.document?.view.followLatest??true;
+    replayStep=loaded.document?.view.replayStep??0;replayPlaying=false;completionShownFor=-1;
+    liveTrace=generationArchive.at(-1)?.trace||engine.inspectChampion(state.game);latestTrace=viewedGeneration()?.trace||liveTrace;
+    renderGameList();renderLayers();syncSettingsControls();updateUI();
+    toast('Project loaded',loaded.legacy?'Legacy settings imported as a fresh run. This older file had no saved champion; the original is unchanged.':'Champion, generation archive, replay and settings restored. Training is paused.','folder-open');
+  } catch(error){toast('Project not loaded',`${error instanceof Error?error.message:'Invalid file'}. Current run and original save are unchanged.`,'triangle-alert');}
+}
+function syncSettingsControls(){
+  const settings:Record<string,number>={population:state.population,generations:state.targetGenerations,speed:state.speed,'generation-speed':state.generationSpeed,acceleration:state.acceleration,'episode-time':state.episodeTimeLimit,'decision-rate':state.decisionsPerSecond,'mutation-rate':state.mutationRate,'mutation-strength':state.mutationStrength,elitism:state.elitism};
+  for(const [id,value] of Object.entries(settings)){const input=document.getElementById(id) as HTMLInputElement|null;if(input)input.value=String(value);}
+  const labels:Record<string,string>={'population-value':String(state.population),'generation-speed-value':`${state.generationSpeed}×`,'acceleration-value':`${state.acceleration}%`,'episode-time-value':`${state.episodeTimeLimit} sec`,'decision-rate-value':`${state.decisionsPerSecond}/sec`,'mutation-rate-value':`${state.mutationRate}%`,'mutation-strength-value':(state.mutationStrength/100).toFixed(2),'elitism-value':`${state.elitism}%`,'speed-label':['0.5×','1×','2×','5×','MAX'][state.speed]};
+  for(const [id,value] of Object.entries(labels)){const node=document.getElementById(id);if(node)node.textContent=value;}
+
+}
 
 function activateBoost(){if(performance.now()<boostUntil)return;if(state.boosts<1)return toast('No boosts ready','Earn one by leveling up or reaching a 20-generation streak.','lock');state.boosts--;boostUntil=performance.now()+15000;runStartedAt=performance.now();updateUI();toast('3× OVERCLOCK','Generation throughput tripled for 15 seconds.','zap');}
 
