@@ -20,7 +20,7 @@ jobs:
       - run: npm run build
       - run: npx playwright install chromium
       - run: npm run test:release
-      - run: npx electron-builder --win nsis portable -c.npmRebuild=false --publish never
+      - run: npx electron-builder --win nsis portable --publish never
       - name: Smoke packaged Windows renderer
         shell: pwsh
         run: |

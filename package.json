@@ -49,7 +49,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "npmRebuild": false
   },
   "engines": {
     "node": ">=24.18.0 <25"
