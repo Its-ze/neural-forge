@@ -1,0 +1,40 @@
+name: Build verified desktop release
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm install --global npm@11.16.0
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install chromium
+      - run: npm run test:release
+      - run: npx electron-builder --win nsis portable -c.npmRebuild=false --publish never
+      - name: Smoke packaged Windows renderer
+        shell: pwsh
+        run: |
+          $env:NEURAL_FORGE_DESKTOP_SMOKE = "$pwd/release/desktop-smoke.json"
+          $process = Start-Process -FilePath "$pwd/release/win-unpacked/Neural Forge.exe" -PassThru
+          if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Desktop smoke timed out' }
+          if ($process.ExitCode -ne 0) { throw 'Desktop smoke failed' }
+          $result = Get-Content release/desktop-smoke.json | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Desktop smoke did not pass' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neural-forge-windows-${{ github.sha }}
+          path: |
+            release/*.exe
+            release/desktop-smoke.json
+            dist/build-info.json
+          if-no-files-found: error

@@ -10,11 +10,18 @@ export interface EvolutionResult {
   championDecisions: number;
   decisionLimit: number;
   championActions: string[];
+  championTrace: DecisionTrace;
+  championSteps: EvaluatedStep[];
 }
 
 export interface EpisodeConfig { timeLimitSeconds: number; decisionsPerSecond: number; }
 
+export interface EvaluatedStep { input: number[]; layers: number[][]; action: string; }
+export interface EngineSnapshot { shape: number[]; family: NetworkFamily; genomes: Genome[]; }
+
 export interface DecisionTrace {
+  provenance?: "evaluated" | "illustrative";
+  decisionNumber?: number;
   observations: Array<{ label: string; value: number }>;
   outputs: Array<{ label: string; value: number }>;
   chosenAction: string;
@@ -43,6 +50,21 @@ export class EvolutionEngine {
   private family: NetworkFamily;
   private evaluationDecisions = 0;
   private evaluationActions:string[] = [];
+  private evaluationSteps: EvaluatedStep[] = [];
+  private pendingStep?: Omit<EvaluatedStep, 'action'>;
+  private capturing = false;
+
+  snapshot(): EngineSnapshot { return structuredClone({shape:this.shape, family:this.family, genomes:this.genomes}); }
+  static restore(snapshot: EngineSnapshot): EvolutionEngine {
+    const e = new EvolutionEngine(snapshot.shape, 1, snapshot.family);
+    e.genomes = structuredClone(snapshot.genomes);
+    return e;
+  }
+  private recordAction(action: string) {
+    this.evaluationActions.push(action);
+    if (this.pendingStep) this.evaluationSteps.push({...this.pendingStep, action});
+  }
+
 
   constructor(shape: number[], population: number, family: NetworkFamily = 'NEAT-style') {
     this.family = family;
@@ -58,11 +80,19 @@ export class EvolutionEngine {
     const decisionLimit = Math.max(1, Math.min(2000, Math.round(episode.timeLimitSeconds * episode.decisionsPerSecond)));
     const decisionCounts = new Map<Genome,number>();
     const actionSequences = new Map<Genome,string[]>();
-    for (const genome of this.genomes) { genome.fitness = this.evaluate(genome, arena, maze, decisionLimit); decisionCounts.set(genome, this.evaluationDecisions); actionSequences.set(genome,[...this.evaluationActions]); }
+    let bestSeen = -Infinity, championSteps: EvaluatedStep[] = [];
+    for (const genome of this.genomes) {
+      genome.fitness = this.evaluate(genome, arena, maze, decisionLimit);
+      decisionCounts.set(genome, this.evaluationActions.length);
+      actionSequences.set(genome,[...this.evaluationActions]);
+      if (genome.fitness > bestSeen) { bestSeen = genome.fitness; championSteps = this.evaluationSteps; }
+    }
     this.genomes.sort((a, b) => b.fitness - a.fitness);
     const best = this.genomes[0].fitness;
     const championDecisions = decisionCounts.get(this.genomes[0]) || 0;
     const championActions = actionSequences.get(this.genomes[0]) || [];
+    const template = this.inspectChampion(arena, maze);
+    const championTrace = traceFromStep(template, championSteps[0], 0);
     const average = this.genomes.reduce((sum, g) => sum + g.fitness, 0) / this.genomes.length;
     const eliteCount = Math.max(1, Math.floor(this.genomes.length * elitePercent / 100));
     const next = this.genomes.slice(0, eliteCount).map(g => this.clone(g));
@@ -73,7 +103,7 @@ export class EvolutionEngine {
     }
     this.genomes = next;
     const buckets = new Set(this.genomes.slice(0, Math.min(40, this.genomes.length)).map(g => Math.round(g.weights[0][0][0] * 3)));
-    return { best, average, species: Math.max(1, buckets.size), weights: this.clone(this.genomes[0]).weights, championDecisions, decisionLimit, championActions };
+    return { best, average, species: Math.max(1, buckets.size), weights: this.clone(this.genomes[0]).weights, championDecisions, decisionLimit, championActions, championTrace, championSteps };
   }
 
   generateMaze(width: number, height: number, seed = 1): MazeEnvironment {
@@ -156,6 +186,7 @@ export class EvolutionEngine {
     if(arena==='xor')chosenAction=(output[0]||0)>.5?'OUTPUT 1':'OUTPUT 0';
     const confidence=output[chosenIndex]||0;
     return {
+      provenance:"illustrative",
       observations:input.map((value,i)=>({label:inputLabels[i]||`Input ${i+1}`,value})),
       outputs:output.map((value,i)=>({label:outputLabels[i]||`Action ${i+1}`,value})),
       chosenAction,chosenIndex,confidence,
@@ -174,7 +205,11 @@ export class EvolutionEngine {
     return { weights, biases, fitness: 0, memory: [], cell: [] };
   }
 
-  private forward(genome: Genome, input: number[]) { return this.forwardLayers(genome,input).at(-1) || []; }
+  private forward(genome: Genome, input: number[]) {
+    const layers = this.forwardLayers(genome,input);
+    if (this.capturing) this.pendingStep = {input:[...input], layers};
+    return layers.at(-1) || [];
+  }
 
   private forwardLayers(genome: Genome, input: number[]) {
     let values = this.preprocess(input.slice(0, this.shape[0]));
@@ -246,7 +281,10 @@ export class EvolutionEngine {
     this.resetState(genome);
     this.evaluationDecisions = 0;
     this.evaluationActions = [];
-    if (arena === 'xor') return this.evaluateXor(genome);
+    this.evaluationSteps = [];
+    this.pendingStep = undefined;
+    this.capturing = true;
+    if (arena === 'xor') return this.evaluateXor(genome, decisionLimit);
     if (arena === 'tictactoe') return this.evaluateTicTacToe(genome, decisionLimit);
     if (arena === 'snake') return this.evaluateSnake(genome, decisionLimit);
     if (arena === 'flappy') return this.evaluateFlappy(genome, decisionLimit);
@@ -261,9 +299,9 @@ export class EvolutionEngine {
     return this.evaluatePattern(genome, decisionLimit);
   }
 
-  private evaluateXor(g: Genome) {
+  private evaluateXor(g: Genome, limit: number) {
     const tests = [[[0, 0], 0], [[0, 1], 1], [[1, 0], 1], [[1, 1], 0]] as Array<[number[], number]>;
-    const error = tests.reduce((sum, [input, target]) => { this.evaluationDecisions++;const value=this.forward(g,input)[0];this.evaluationActions.push(value>.5?'OUTPUT 1':'OUTPUT 0');return sum + Math.pow(target-value, 2); }, 0);
+    const error = tests.slice(0,limit).reduce((sum, [input, target]) => { this.evaluationDecisions++;const value=this.forward(g,input)[0];this.recordAction(value>.5?'OUTPUT 1':'OUTPUT 0');return sum + Math.pow(target-value, 2); }, 0);
     return Math.pow(4 - error, 2) * 6.25;
   }
 
@@ -276,7 +314,7 @@ export class EvolutionEngine {
           if(this.evaluationDecisions>=limit)break;this.evaluationDecisions++;
           const input = [...board.map(v => v === 1 ? 1 : 0), ...board.map(v => v === -1 ? 1 : 0)];
           const scores = this.forward(g, input); const legal = board.map((v, i) => v === 0 ? i : -1).filter(i => i >= 0);
-          legal.sort((a, b) => (scores[b] || 0) - (scores[a] || 0));this.evaluationActions.push(`CELL ${legal[0]+1}`); board[legal[0]] = 1;
+          legal.sort((a, b) => (scores[b] || 0) - (scores[a] || 0));this.recordAction(`CELL ${legal[0]+1}`); board[legal[0]] = 1;
         } else { const legal = board.map((v, i) => v === 0 ? i : -1).filter(i => i >= 0); board[legal[Math.floor(Math.random() * legal.length)]] = -1; }
         const winner = this.winner(board); if (winner) { total += winner === 1 ? 12 : -4; break; }
         total += .5; player *= -1;
@@ -291,23 +329,35 @@ export class EvolutionEngine {
     const size=9, body:[[number,number]]=[[4,4]], food:[number,number]=[7,2]; let dir=0, score=0;
     for(let step=0;step<limit;step++){this.evaluationDecisions++;
       const [x,y]=body[0];const input=[x/size,y/size,food[0]/size,food[1]/size,(food[0]-x)/size,(food[1]-y)/size,dir===0?1:0,dir===1?1:0,dir===2?1:0,dir===3?1:0,1-x/(size-1),1-y/(size-1)];
-      const out=this.forward(g,input);dir=out.indexOf(Math.max(...out));this.evaluationActions.push(['RIGHT','DOWN','LEFT','UP'][dir]);const moves=[[1,0],[0,1],[-1,0],[0,-1]], nx=x+moves[dir][0],ny=y+moves[dir][1];if(nx<0||ny<0||nx>=size||ny>=size||body.some(p=>p[0]===nx&&p[1]===ny))break;body.unshift([nx,ny]);score+=.25;if(nx===food[0]&&ny===food[1]){score+=12;food[0]=(food[0]*3+2)%size;food[1]=(food[1]*5+1)%size;}else body.pop();score+=Math.max(0,1-Math.abs(food[0]-nx)/size-Math.abs(food[1]-ny)/size)*.08;
+      const out=this.forward(g,input);dir=out.indexOf(Math.max(...out));this.recordAction(['RIGHT','DOWN','LEFT','UP'][dir]);const moves=[[1,0],[0,1],[-1,0],[0,-1]], nx=x+moves[dir][0],ny=y+moves[dir][1];if(nx<0||ny<0||nx>=size||ny>=size||body.some(p=>p[0]===nx&&p[1]===ny))break;body.unshift([nx,ny]);score+=.25;if(nx===food[0]&&ny===food[1]){score+=12;food[0]=(food[0]*3+2)%size;food[1]=(food[1]*5+1)%size;}else body.pop();score+=Math.max(0,1-Math.abs(food[0]-nx)/size-Math.abs(food[1]-ny)/size)*.08;
     } return score;
   }
 
-  private evaluateFlappy(g:Genome,limit:number){let y=.5,v=0,score=0;for(let step=0;step<limit;step++){this.evaluationDecisions++;const pipeX=1-(step%35)/35,gap=.25+((Math.floor(step/35)*.23)% .5);const flap=this.forward(g,[y,v,pipeX,gap,gap+.28])[0]>.55;this.evaluationActions.push(flap?'FLAP':'COAST');if(flap)v=-.035;v+=.006;y+=v;if(y<0||y>1||(pipeX<.08&&(y<gap||y>gap+.28)))break;score+=.3;}return score;}
-  private evaluatePong(g:Genome,limit:number){let paddle=.5,opponent=.5,ballX=.5,ballY=.15,vx=-.035,vy=.037,score=0;for(let step=0;step<limit;step++){this.evaluationDecisions++;ballX+=vx;ballY+=vy;if(ballY<.04||ballY>.96){vy*=-1;ballY=Math.max(.04,Math.min(.96,ballY));}opponent=Math.max(.12,Math.min(.88,opponent+Math.sign(ballY-opponent)*.045));const out=this.forward(g,[paddle,ballY,vy,ballX,Math.abs(paddle-ballY),1]);const action=out.indexOf(Math.max(...out));this.evaluationActions.push(['UP','STAY','DOWN'][action]);paddle=Math.max(.12,Math.min(.88,paddle+(action===0?-.06:action===2?.06:0)));score+=Math.max(0,1-Math.abs(paddle-ballY))*.08;if(ballX<.06){if(Math.abs(ballY-paddle)<.17){vx=Math.abs(vx)*1.015;ballX=.06;score+=8;}else break;}else if(ballX>.94){vx=-Math.abs(vx)*1.015;ballX=.94;score+=1;}}return score;}
-  private evaluateMinesweeper(g:Genome,limit:number){let score=0;for(let sample=0;sample<limit;sample++){this.evaluationDecisions++;const board=Array.from({length:81},(_,i)=>((i*13+sample*7)%19===0?-1:(i*7+sample)%4)/3);const out=this.forward(g,board);const pick=out.indexOf(Math.max(...out));this.evaluationActions.push(`TILE ${pick+1}`);score+=board[pick]===-1?0:3+board[pick];}return score;}
-  private evaluateBreakout(g:Genome,limit:number){let paddle=.5,ball=.2,v=.047,score=0;for(let i=0;i<limit;i++){this.evaluationDecisions++;ball+=v;if(ball<0||ball>1){v*=-1;ball=Math.max(0,Math.min(1,ball));}const o=this.forward(g,[paddle,ball,v,Math.abs(ball-paddle),i/limit,1]);const a=o.indexOf(Math.max(...o));this.evaluationActions.push(['LEFT','STAY','RIGHT'][a]);paddle=Math.max(0,Math.min(1,paddle+(a===0?-.06:a===2?.06:0)));score+=Math.abs(paddle-ball)<.15?.45:.03;}return score;}
-  private evaluateDino(g:Genome,limit:number){let score=0,jump=0,velocity=0;for(let i=0;i<limit;i++){this.evaluationDecisions++;const obstacle=1-(i%31)/31;const o=this.forward(g,[obstacle,jump,velocity,i/limit]);const jumping=o[0]>.58&&jump===0;this.evaluationActions.push(jumping?'JUMP':'RUN');if(jumping)velocity=.16;velocity-=.018;jump=Math.max(0,jump+velocity);if(jump===0)velocity=0;if(obstacle<.08&&jump<.18)break;score+=.24;}return score;}
-  private evaluateMerge(g:Genome,limit:number){let score=0,largest=2;for(let i=0;i<limit;i++){this.evaluationDecisions++;const board=Array.from({length:16},(_,n)=>n<i%16?Math.log2(largest)/11:0);const o=this.forward(g,board);const action=o.indexOf(Math.max(...o));this.evaluationActions.push(['UP','RIGHT','DOWN','LEFT'][action]);const confidence=Math.max(...o);if(confidence>.45){score+=confidence*1.4;if(i%6===0)largest*=2;}else score+=.1;}return score+Math.log2(largest)*2;}
-  private evaluateLander(g:Genome,limit:number){let x=.3,y=1,vx=.015,vy=-.025,fuel=1,score=0;for(let i=0;i<limit&&y>0;i++){this.evaluationDecisions++;const o=this.forward(g,[x,y,vx,vy,fuel,.5-x]);const action=o.indexOf(Math.max(...o));this.evaluationActions.push(['MAIN','LEFT','RIGHT'][action]);if(o[0]>.58&&fuel>0){vy+=.012;fuel-=.012;}if(o[1]>.58&&fuel>0){vx-=.006;fuel-=.005;}if(o[2]>.58&&fuel>0){vx+=.006;fuel-=.005;}vy-=.003;x+=vx;y+=vy;score+=.08;}return Math.max(0,score+20-Math.abs(x-.5)*18-Math.abs(vy)*90);}
-  private evaluateMaze(g:Genome,m:MazeEnvironment,limit:number){let pos=m.start,score=0;const visited=new Set<number>([pos]);const gx=m.goal%m.width,gy=Math.floor(m.goal/m.width);let previous=99;for(let step=0;step<limit;step++){this.evaluationDecisions++;const x=pos%m.width,y=Math.floor(pos/m.width),moves=[-m.width,1,m.width,-1];const blocked=moves.map(d=>m.walls[pos+d]?1:0);const dist=Math.abs(gx-x)+Math.abs(gy-y);const input=[...blocked,(gx-x)/m.width,(gy-y)/m.height,x/m.width,y/m.height,dist/(m.width+m.height),visited.size/(m.width*m.height),step/limit,1];const out=this.forward(g,input);const choices=out.map((v,i)=>({v,i})).sort((a,b)=>b.v-a.v);const move=choices.find(c=>!blocked[c.i]);if(!move)break;this.evaluationActions.push(['UP','RIGHT','DOWN','LEFT'][move.i]);pos+=moves[move.i];score+=dist<previous?.35:-.08;previous=dist;if(!visited.has(pos)){score+=.18;visited.add(pos);}if(pos===m.goal){score+=65-step*.2;break;}}return Math.max(.1,score+8);}
+  private evaluateFlappy(g:Genome,limit:number){let y=.5,v=0,score=0;for(let step=0;step<limit;step++){this.evaluationDecisions++;const pipeX=1-(step%35)/35,gap=.25+((Math.floor(step/35)*.23)% .5);const flap=this.forward(g,[y,v,pipeX,gap,gap+.28])[0]>.55;this.recordAction(flap?'FLAP':'COAST');if(flap)v=-.035;v+=.006;y+=v;if(y<0||y>1||(pipeX<.08&&(y<gap||y>gap+.28)))break;score+=.3;}return score;}
+  private evaluatePong(g:Genome,limit:number){let paddle=.5,opponent=.5,ballX=.5,ballY=.15,vx=-.035,vy=.037,score=0;for(let step=0;step<limit;step++){this.evaluationDecisions++;ballX+=vx;ballY+=vy;if(ballY<.04||ballY>.96){vy*=-1;ballY=Math.max(.04,Math.min(.96,ballY));}opponent=Math.max(.12,Math.min(.88,opponent+Math.sign(ballY-opponent)*.045));const out=this.forward(g,[paddle,ballY,vy,ballX,Math.abs(paddle-ballY),1]);const action=out.indexOf(Math.max(...out));this.recordAction(['UP','STAY','DOWN'][action]);paddle=Math.max(.12,Math.min(.88,paddle+(action===0?-.06:action===2?.06:0)));score+=Math.max(0,1-Math.abs(paddle-ballY))*.08;if(ballX<.06){if(Math.abs(ballY-paddle)<.17){vx=Math.abs(vx)*1.015;ballX=.06;score+=8;}else break;}else if(ballX>.94){vx=-Math.abs(vx)*1.015;ballX=.94;score+=1;}}return score;}
+  private evaluateMinesweeper(g:Genome,limit:number){let score=0;for(let sample=0;sample<limit;sample++){this.evaluationDecisions++;const board=Array.from({length:81},(_,i)=>((i*13+sample*7)%19===0?-1:(i*7+sample)%4)/3);const out=this.forward(g,board);const pick=out.indexOf(Math.max(...out));this.recordAction(`TILE ${pick+1}`);score+=board[pick]===-1?0:3+board[pick];}return score;}
+  private evaluateBreakout(g:Genome,limit:number){let paddle=.5,ball=.2,v=.047,score=0;for(let i=0;i<limit;i++){this.evaluationDecisions++;ball+=v;if(ball<0||ball>1){v*=-1;ball=Math.max(0,Math.min(1,ball));}const o=this.forward(g,[paddle,ball,v,Math.abs(ball-paddle),i/limit,1]);const a=o.indexOf(Math.max(...o));this.recordAction(['LEFT','STAY','RIGHT'][a]);paddle=Math.max(0,Math.min(1,paddle+(a===0?-.06:a===2?.06:0)));score+=Math.abs(paddle-ball)<.15?.45:.03;}return score;}
+  private evaluateDino(g:Genome,limit:number){let score=0,jump=0,velocity=0;for(let i=0;i<limit;i++){this.evaluationDecisions++;const obstacle=1-(i%31)/31;const o=this.forward(g,[obstacle,jump,velocity,i/limit]);const jumping=o[0]>.58&&jump===0;this.recordAction(jumping?'JUMP':'RUN');if(jumping)velocity=.16;velocity-=.018;jump=Math.max(0,jump+velocity);if(jump===0)velocity=0;if(obstacle<.08&&jump<.18)break;score+=.24;}return score;}
+  private evaluateMerge(g:Genome,limit:number){let score=0,largest=2;for(let i=0;i<limit;i++){this.evaluationDecisions++;const board=Array.from({length:16},(_,n)=>n<i%16?Math.log2(largest)/11:0);const o=this.forward(g,board);const action=o.indexOf(Math.max(...o));this.recordAction(['UP','RIGHT','DOWN','LEFT'][action]);const confidence=Math.max(...o);if(confidence>.45){score+=confidence*1.4;if(i%6===0)largest*=2;}else score+=.1;}return score+Math.log2(largest)*2;}
+  private evaluateLander(g:Genome,limit:number){let x=.3,y=1,vx=.015,vy=-.025,fuel=1,score=0;for(let i=0;i<limit&&y>0;i++){this.evaluationDecisions++;const o=this.forward(g,[x,y,vx,vy,fuel,.5-x]);const action=o.indexOf(Math.max(...o));this.recordAction(['MAIN','LEFT','RIGHT'][action]);if(o[0]>.58&&fuel>0){vy+=.012;fuel-=.012;}if(o[1]>.58&&fuel>0){vx-=.006;fuel-=.005;}if(o[2]>.58&&fuel>0){vx+=.006;fuel-=.005;}vy-=.003;x+=vx;y+=vy;score+=.08;}return Math.max(0,score+20-Math.abs(x-.5)*18-Math.abs(vy)*90);}
+  private evaluateMaze(g:Genome,m:MazeEnvironment,limit:number){let pos=m.start,score=0;const visited=new Set<number>([pos]);const gx=m.goal%m.width,gy=Math.floor(m.goal/m.width);let previous=99;for(let step=0;step<limit;step++){this.evaluationDecisions++;const x=pos%m.width,y=Math.floor(pos/m.width),moves=[-m.width,1,m.width,-1];const blocked=moves.map(d=>m.walls[pos+d]?1:0);const dist=Math.abs(gx-x)+Math.abs(gy-y);const input=[...blocked,(gx-x)/m.width,(gy-y)/m.height,x/m.width,y/m.height,dist/(m.width+m.height),visited.size/(m.width*m.height),step/limit,1];const out=this.forward(g,input);const choices=out.map((v,i)=>({v,i})).sort((a,b)=>b.v-a.v);const move=choices.find(c=>!blocked[c.i]);if(!move)break;this.recordAction(['UP','RIGHT','DOWN','LEFT'][move.i]);pos+=moves[move.i];score+=dist<previous?.35:-.08;previous=dist;if(!visited.has(pos)){score+=.18;visited.add(pos);}if(pos===m.goal){score+=65-step*.2;break;}}return Math.max(.1,score+8);}
   private evaluateMazeMaker(g:Genome){const values:number[]=[];for(let y=0;y<8;y++)for(let x=0;x<8;x++)values.push(this.forward(g,[x/7,y/7,Math.sin(x*y),1])[0]);const density=values.filter(v=>v>.55).length/values.length;const variance=values.reduce((s,v)=>s+Math.abs(v-.5),0)/values.length;return 25-Math.abs(density-.38)*35+variance*12;}
-  private evaluatePattern(g:Genome,limit:number){let score=0;for(let step=0;step<limit;step++){this.evaluationDecisions++;const input=Array.from({length:this.shape[0]},(_,i)=>Math.sin(i*1.7+step/Math.max(1,limit)*Math.PI*2));const output=this.forward(g,input);this.evaluationActions.push(`ACTION ${output.indexOf(Math.max(...output))+1}`);score+=output.reduce((s,v,i)=>s+(i%2?v:1-v),0);}return score*4/Math.max(1,limit);}
+  private evaluatePattern(g:Genome,limit:number){let score=0;for(let step=0;step<limit;step++){this.evaluationDecisions++;const input=Array.from({length:this.shape[0]},(_,i)=>Math.sin(i*1.7+step/Math.max(1,limit)*Math.PI*2));const output=this.forward(g,input);this.recordAction(`ACTION ${output.indexOf(Math.max(...output))+1}`);score+=output.reduce((s,v,i)=>s+(i%2?v:1-v),0);}return score*4/Math.max(1,limit);}
 
   private tournament(){let best=this.genomes[Math.floor(Math.random()*this.genomes.length)];for(let i=0;i<3;i++){const candidate=this.genomes[Math.floor(Math.random()*this.genomes.length)];if(candidate.fitness>best.fitness)best=candidate;}return best;}
   private crossover(a:Genome,b:Genome){const child=this.clone(a);child.weights=child.weights.map((m,l)=>m.map((row,n)=>row.map((v,w)=>Math.random()<.5?v:b.weights[l][n][w])));child.biases=child.biases.map((row,l)=>row.map((v,n)=>Math.random()<.5?v:b.biases[l][n]));return child;}
   private mutate(g:Genome,rate:number,strength:number){g.weights.forEach(m=>m.forEach(row=>row.forEach((_,i)=>{if(Math.random()<rate)row[i]+=rand()*strength;})));g.biases.forEach(row=>row.forEach((_,i)=>{if(Math.random()<rate)row[i]+=rand()*strength;}));return g;}
   private clone(g:Genome):Genome{return{weights:g.weights.map(m=>m.map(r=>[...r])),biases:g.biases.map(r=>[...r]),fitness:g.fitness,memory:[],cell:[]};}
+}
+
+/** Build an inspection from the actual forward-pass capture, never a resampled input. */
+export function traceFromStep(template: DecisionTrace, step: EvaluatedStep | undefined, index: number): DecisionTrace {
+  if (!step) return {...template, provenance:'illustrative', explanation:'No evaluated decision was recorded.'};
+  const output = step.layers.at(-1) || [];
+  const chosenIndex = Math.max(0, output.indexOf(Math.max(...output)));
+  return {...template, provenance:'evaluated', decisionNumber:index+1,
+    observations:step.input.map((value,i)=>({label:template.observations[i]?.label || `Input ${i+1}`,value})),
+    outputs:output.map((value,i)=>({label:template.outputs[i]?.label || `Output ${i+1}`,value})),
+    layers:step.layers, chosenAction:step.action, chosenIndex, confidence:output[chosenIndex] || 0,
+    explanation:`Recorded evaluation decision ${index+1}: ${step.action}. Activations and observations were captured during this forward pass; arena thresholds and legal-action rules determine the applied action.`};
 }

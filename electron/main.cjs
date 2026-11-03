@@ -59,6 +59,8 @@ function readJson(url) {
 }
 
 async function checkForUpdates() {
+  // The existing checksum-manifest protocol describes Windows NSIS installers only.
+  if(process.platform!=='win32')return {currentVersion:app.getVersion(),updateAvailable:false,update:null};
   const currentVersion = app.getVersion();
   const manifestUrl = new URL(UPDATE_MANIFEST_URL);
   manifestUrl.searchParams.set('t', Date.now().toString());
@@ -76,6 +78,7 @@ async function checkForUpdates() {
 }
 
 async function downloadAndInstallUpdate(event) {
+  if(process.platform!=='win32')return {started:false,reason:'Automatic installer updates are available on Windows only. Download a Linux release manually.'};
   if (!availableUpdate) await checkForUpdates();
   if (!availableUpdate) return { started: false, reason: 'up-to-date' };
   const update = availableUpdate;
@@ -135,6 +138,19 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  if(process.env.NEURAL_FORGE_DESKTOP_SMOKE){
+    mainWindow.webContents.once('did-finish-load',async()=>{
+      try{
+        const result=await mainWindow.webContents.executeJavaScript(`(async()=>{
+          document.querySelector('[data-game="pong"]').click();
+          document.querySelector('[data-action="step"]').click();
+          return {archive:document.querySelector('#archive-position').textContent,trace:document.querySelector('#choice-reason').textContent};
+        })()`);
+        if(!result.archive.includes('Viewing generation 1 of 1')||!result.trace.includes('Recorded evaluation decision 1'))throw new Error('Desktop renderer smoke failed');
+        await fs.writeFile(process.env.NEURAL_FORGE_DESKTOP_SMOKE,JSON.stringify({ok:true,version:app.getVersion(),...result}));app.exit(0);
+      }catch(error){await fs.writeFile(process.env.NEURAL_FORGE_DESKTOP_SMOKE,JSON.stringify({ok:false,error:String(error)}));app.exit(1);}
+    });
+  }
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) mainWindow.loadURL(devUrl);
   else mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
@@ -171,7 +187,13 @@ ipcMain.handle('project:save', async (_event, payload) => {
     filters: [{ name: 'Neural Forge Project', extensions: ['json'] }],
   });
   if (result.canceled || !result.filePath) return { canceled: true };
-  await fs.writeFile(result.filePath, JSON.stringify(payload, null, 2), 'utf8');
+  const temporary = result.filePath + '.tmp-' + crypto.randomUUID();
+  try {
+    try { await fs.copyFile(result.filePath, result.filePath + '.backup-' + Date.now()); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await fs.writeFile(temporary, JSON.stringify(payload), {encoding:'utf8',flag:'wx'});
+    await fs.rename(temporary, result.filePath);
+  } catch(error) { await fs.unlink(temporary).catch(()=>{}); throw error; }
   return { canceled: false, path: result.filePath };
 });
 
@@ -182,6 +204,8 @@ ipcMain.handle('project:load', async () => {
     filters: [{ name: 'Neural Forge Project', extensions: ['json'] }],
   });
   if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  const stat=await fs.stat(result.filePaths[0]);
+  if(stat.size>128*1024*1024)throw new Error('Project exceeds 128 MiB; original unchanged.');
   const raw = await fs.readFile(result.filePaths[0], 'utf8');
   return { canceled: false, path: result.filePaths[0], data: JSON.parse(raw) };
 });
