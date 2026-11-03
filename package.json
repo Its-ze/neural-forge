@@ -1,6 +1,6 @@
 {
   "name": "neural-forge",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "private": true,
   "description": "A visual neural-network evolution playground for games and screen-based experiments.",
   "main": "electron/main.cjs",
