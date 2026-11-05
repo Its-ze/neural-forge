@@ -108,7 +108,7 @@ app.innerHTML = `
     <aside class="sidebar">
       <div class="sidebar-heading"><span>TRAINING ARENAS</span><button class="tiny-button" data-action="collapse-games"><i data-lucide="chevrons-up-down"></i></button></div>
       <div class="game-list" id="game-list"></div>
-      <button class="custom-game-card" data-action="custom-trainer"><span class="custom-icon"><i data-lucide="scan-line"></i></span><span><strong>Custom screen task</strong><small>Capture any app or game</small></span><i data-lucide="plus"></i></button>
+      <button class="custom-game-card" data-action="custom-trainer"><span class="custom-icon"><i data-lucide="scan-line"></i></span><span><strong>Custom screen task</strong><small>Unavailable in standalone edition</small></span><i data-lucide="plus"></i></button>
       <div class="sidebar-footer"><div class="tip-icon"><i data-lucide="lightbulb"></i></div><p><strong>Evolution tip</strong><br>Start with a broad population, then lower mutation once fitness plateaus.</p></div>
     </aside>
 
@@ -405,6 +405,7 @@ function openTrainingComplete(){
 }
 
 function evolveOne() {
+  if(state.game==='custom'){state.running=false;updateUI();toast('Screen tasks unavailable','This saved screen task cannot train: live capture, input control and OCR rewards are not implemented. Your saved project remains intact.','triangle-alert');return;}
   if(state.generation>=state.targetGenerations){state.running=false;if(completionShownFor!==state.targetGenerations)openTrainingComplete();else updateUI();return;}
   state.generation++;
   const previousBest=state.bestFitness;
@@ -510,7 +511,7 @@ function openSettings(){const root=$('#modal-root');root.className='modal-root o
 
 let wizardStep=1;let wizardSources:CaptureSource[]=[];let wizardTask:CustomTask={sourceId:'demo',sourceName:'Demo game window',thumbnail:'',region:{x:.18,y:.18,w:.64,h:.58},actions:['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'],reward:'Color target',rewardValue:'#b9ff66'};
 
-async function openCustomWizard(){wizardStep=1;wizardSources=[];if(window.neuralForge){try{wizardSources=await window.neuralForge.getCaptureSources();}catch{toast('Capture unavailable','Could not read windows. Demo source loaded instead.','triangle-alert');}}if(!wizardSources.length)wizardSources=[{id:'demo',name:'Demo game window',displayId:'1',thumbnail:'',icon:null},{id:'screen',name:'Entire display',displayId:'1',thumbnail:'',icon:null}];renderWizard();}
+async function openCustomWizard(){toast('Screen tasks unavailable','Live capture training, input control and OCR rewards are not implemented. Built-in arenas work offline.','triangle-alert');}
 
 function renderWizard(){const root=$('#modal-root');root.className='modal-root open';const labels=['Choose source','Select region','Allowed actions','Define reward'];root.innerHTML=`<div class="modal-backdrop"></div><div class="wizard-modal"><div class="wizard-header"><div><span class="eyebrow">CUSTOM SCREEN TASK</span><h2>Teach an agent to use any game</h2></div><button data-wizard-close><i data-lucide="x"></i></button></div><div class="wizard-steps">${labels.map((l,i)=>`<div class="wizard-step ${wizardStep===i+1?'active':''} ${wizardStep>i+1?'done':''}"><span>${wizardStep>i+1?'✓':i+1}</span><b>${l}</b></div>`).join('')}</div><div class="wizard-body">${wizardContent()}</div><div class="wizard-footer"><span><i data-lucide="shield-check"></i> Inputs only run while a task is armed</span><div><button class="secondary-button" data-wizard-back ${wizardStep===1?'disabled':''}>Back</button><button class="primary-button" data-wizard-next>${wizardStep===4?'Create task':'Continue'} <i data-lucide="arrow-right"></i></button></div></div></div>`;createIcons({icons});
   root.querySelector('[data-wizard-close]')?.addEventListener('click',()=>root.className='modal-root');root.querySelector('[data-wizard-back]')?.addEventListener('click',()=>{wizardStep--;renderWizard();});root.querySelector('[data-wizard-next]')?.addEventListener('click',()=>{if(wizardStep<4){wizardStep++;renderWizard();}else{state.custom={...wizardTask};state.game='custom';state.generation=0;state.running=false;resetEngine();clearGenerationArchive();root.className='modal-root';renderGameList();updateUI();toast('Custom task created','Capture, actions, and reward signal are configured. Run a generation to create its first champion record.','scan-line');}});wireWizardStep(root);
@@ -530,4 +531,4 @@ function escapeHtml(s:string){return s.replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'
 document.addEventListener('click',event=>{const action=(event.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action;if(action==='updates')void checkUpdates(true);});
 document.addEventListener('click',event=>{const action=(event.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action;if(action==='replay-prev')setReplayStep(replayStep-1);else if(action==='replay-next')setReplayStep(replayStep+1);else if(action==='replay-toggle'){const actions=replayActions();if(!actions.length)return;if(replayStep>=actions.length)replayStep=0;replayPlaying=!replayPlaying;replayLastAt=performance.now();updateReplayControls();}});
 ($('#replay-slider') as HTMLInputElement).addEventListener('input',event=>setReplayStep(Number((event.target as HTMLInputElement).value)));
-renderGameList();renderLayers();updateUI();animationFrame=requestAnimationFrame(loop);setTimeout(()=>checkUpdates(false),1800);
+renderGameList();renderLayers();updateUI();animationFrame=requestAnimationFrame(loop);/* Optional updates are checked only when requested. */
