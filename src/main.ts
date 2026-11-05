@@ -108,7 +108,7 @@ app.innerHTML = `
     <aside class="sidebar">
       <div class="sidebar-heading"><span>TRAINING ARENAS</span><button class="tiny-button" data-action="collapse-games"><i data-lucide="chevrons-up-down"></i></button></div>
       <div class="game-list" id="game-list"></div>
-      <button class="custom-game-card" data-action="custom-trainer"><span class="custom-icon"><i data-lucide="scan-line"></i></span><span><strong>Custom screen task</strong><small>Capture any app or game</small></span><i data-lucide="plus"></i></button>
+      <button class="custom-game-card" data-action="custom-trainer"><span class="custom-icon"><i data-lucide="scan-line"></i></span><span><strong>Custom screen task</strong><small>Unavailable in standalone edition</small></span><i data-lucide="plus"></i></button>
       <div class="sidebar-footer"><div class="tip-icon"><i data-lucide="lightbulb"></i></div><p><strong>Evolution tip</strong><br>Start with a broad population, then lower mutation once fitness plateaus.</p></div>
     </aside>
 
