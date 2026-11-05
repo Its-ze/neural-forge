@@ -42,7 +42,7 @@ function request(url, onResponse, redirects = 0) {
       return onResponse(new Error(`The update server returned HTTP ${response.statusCode || 'unknown'}.`));
     }
     onResponse(null, response);
-  }).on('error', (error) => onResponse(error));
+  }).setTimeout(8000, function(){ this.destroy(new Error('Update check timed out; try again when online.')); }).on('error', (error) => onResponse(error));
 }
 
 function readJson(url) {
